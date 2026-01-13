@@ -1,172 +1,197 @@
 """
-NYC Taxi Rides Data Loader
-Loads NYC Taxi Rides CSV data from local or S3 using PySpark
-with schema inference, error handling, and data inspection capabilities.
+Data loading module for test_project1.
+
+This module provides functionality to load and process data from various sources.
+It supports both local execution and Colab environments through relative path handling.
 """
 
-import sys
-import argparse
-from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType
+import logging
+import os
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 
-def create_spark_session(app_name="NYC_Taxi_Data_Loader"):
+def get_project_root() -> Path:
     """
-    Create and return a Spark session.
+    Get the project root directory.
+    
+    Works correctly in both local and Colab environments by finding the
+    directory containing the src module.
+    
+    Returns:
+        Path: The absolute path to the project root directory.
+    """
+    # Get the directory containing this file
+    current_file = Path(__file__).resolve()
+    # Go up one level from src/ to get project root
+    project_root = current_file.parent.parent
+    logger.debug(f"Project root detected at: {project_root}")
+    return project_root
+
+
+def get_data_path(relative_path: str) -> Path:
+    """
+    Get the absolute path to a data file using relative path from project root.
     
     Args:
-        app_name (str): Name of the Spark application
-        
+        relative_path: Path relative to the project root (e.g., 'data/raw/file.csv')
+    
     Returns:
-        SparkSession: Configured Spark session
+        Path: The absolute path to the data file.
     """
-    try:
-        spark = SparkSession.builder \
-            .appName(app_name) \
-            .getOrCreate()
-        
-        print(f"✓ Spark session '{app_name}' created successfully")
-        return spark
-    
-    except Exception as e:
-        print(f"✗ Error creating Spark session: {str(e)}")
-        sys.exit(1)
+    project_root = get_project_root()
+    full_path = project_root / relative_path
+    logger.debug(f"Data path resolved: {full_path}")
+    return full_path
 
 
-def load_taxi_data(spark, data_path):
+def load_data(file_path: str) -> Optional[Any]:
     """
-    Load NYC Taxi Rides CSV data from local or S3 path.
+    Load data from a file.
     
-    Supports both local file paths and S3 paths (s3://bucket/path).
-    Automatically infers schema and handles various error conditions.
+    Supports multiple file formats (CSV, JSON, etc.) and handles errors gracefully.
     
     Args:
-        spark (SparkSession): Active Spark session
-        data_path (str): Path to CSV file (local or S3)
-        
+        file_path: Path to the data file (can be relative or absolute).
+                  If relative, it's resolved from the project root.
+    
     Returns:
-        DataFrame: Loaded taxi rides data, or None if loading fails
-        
+        Optional[Any]: The loaded data, or None if loading failed.
+    
     Raises:
-        FileNotFoundError: If local file does not exist
-        Exception: For other errors during data loading
+        FileNotFoundError: If the specified file cannot be found.
     """
     try:
-        print(f"\n📂 Loading data from: {data_path}")
+        # Handle relative paths from project root
+        if not os.path.isabs(file_path):
+            data_path = get_data_path(file_path)
+        else:
+            data_path = Path(file_path)
         
-        # Check if it's a local path and file exists
-        if not data_path.startswith("s3://"):
-            import os
-            if not os.path.exists(data_path):
-                raise FileNotFoundError(f"Local file not found: {data_path}")
+        if not data_path.exists():
+            logger.error(f"File not found: {data_path}")
+            raise FileNotFoundError(f"Data file not found at: {data_path}")
         
-        # Load CSV with inferred schema
-        df = spark.read \
-            .option("inferSchema", "true") \
-            .option("header", "true") \
-            .option("mode", "PERMISSIVE") \
-            .csv(data_path)
+        logger.info(f"Loading data from: {data_path}")
         
-        print(f"✓ Data loaded successfully")
-        print(f"  - Total records: {df.count():,}")
-        print(f"  - Total columns: {len(df.columns)}")
+        # Determine file type and load accordingly
+        file_extension = data_path.suffix.lower()
         
-        return df
-    
-    except FileNotFoundError as e:
-        print(f"✗ FileNotFoundError: {str(e)}")
-        print("  Please verify the file path and ensure the file exists.")
-        return None
+        if file_extension == '.csv':
+            import pandas as pd
+            data = pd.read_csv(data_path)
+            logger.info(f"Successfully loaded CSV file with shape: {data.shape}")
+        elif file_extension == '.json':
+            import json
+            with open(data_path, 'r') as f:
+                data = json.load(f)
+            logger.info(f"Successfully loaded JSON file")
+        elif file_extension in ['.pkl', '.pickle']:
+            import pickle
+            with open(data_path, 'rb') as f:
+                data = pickle.load(f)
+            logger.info(f"Successfully loaded pickle file")
+        else:
+            logger.warning(f"Unsupported file format: {file_extension}")
+            data = None
+        
+        return data
     
     except Exception as e:
-        print(f"✗ Error loading data: {type(e).__name__}: {str(e)}")
-        if "S3" in str(type(e)) or "s3" in data_path.lower():
-            print("  Please verify S3 credentials and bucket/key permissions.")
-        return None
+        logger.error(f"Error loading data from {file_path}: {str(e)}")
+        raise
 
 
-def display_data_info(df):
+def validate_data(data: Any) -> bool:
     """
-    Display schema and sample rows from the DataFrame.
+    Validate loaded data.
+    
+    Performs basic validation checks on the loaded data.
     
     Args:
-        df (DataFrame): Spark DataFrame to inspect
+        data: The data to validate.
+    
+    Returns:
+        bool: True if data passes validation, False otherwise.
     """
-    if df is None:
-        print("✗ No data to display")
-        return
+    if data is None:
+        logger.warning("Data is None")
+        return False
     
     try:
-        print("\n" + "="*70)
-        print("DATA SCHEMA")
-        print("="*70)
-        df.printSchema()
-        
-        print("\n" + "="*70)
-        print("SAMPLE DATA (First 10 rows)")
-        print("="*70)
-        df.show(10, truncate=False)
-        
-        print("\n" + "="*70)
-        print("DATA STATISTICS")
-        print("="*70)
-        print(f"Column Names: {', '.join(df.columns)}")
-        print(f"Data Types: {dict(df.dtypes)}")
-        
-    except Exception as e:
-        print(f"✗ Error displaying data info: {str(e)}")
-
-
-def main(path=None):
-    """
-    Main entry point for the NYC Taxi Data Loader.
+        import pandas as pd
+        if isinstance(data, pd.DataFrame):
+            if data.empty:
+                logger.warning("DataFrame is empty")
+                return False
+            logger.info(f"DataFrame validation passed. Shape: {data.shape}")
+            return True
+    except ImportError:
+        pass
     
-    Accepts an optional command-line argument for the data path.
-    If no path is provided, uses a default sample path.
+    logger.info("Data validation passed")
+    return True
+
+
+def main(config: Optional[Dict[str, Any]] = None) -> Optional[Any]:
+    """
+    Main function to load and validate data.
     
     Args:
-        path (str, optional): Path to CSV file. If None, parses from command line.
+        config: Optional configuration dictionary with keys:
+               - 'data_path': Path to the data file (relative to project root)
+               - 'validate': Whether to validate data (default: True)
+    
+    Returns:
+        Optional[Any]: The loaded and validated data, or None if loading failed.
     """
-    # Parse command-line arguments if path not provided
-    if path is None:
-        parser = argparse.ArgumentParser(
-            description="Load and inspect NYC Taxi Rides CSV data"
-        )
-        parser.add_argument(
-            "path",
-            nargs="?",
-            default="data/nyc_taxi_rides.csv",
-            help="Path to CSV file (local path or s3://bucket/key). "
-                 "Default: data/nyc_taxi_rides.csv"
-        )
+    config = config or {}
+    data_path = config.get('data_path', 'data/raw/data.csv')
+    should_validate = config.get('validate', True)
+    
+    logger.info(f"Starting data loading process with config: {config}")
+    
+    try:
+        # Load the data
+        data = load_data(data_path)
         
-        args = parser.parse_args()
-        data_path = args.path
-    else:
-        data_path = path
+        # Validate if requested
+        if should_validate and not validate_data(data):
+            logger.warning("Data validation failed")
+            return None
+        
+        logger.info("Data loading process completed successfully")
+        return data
     
-    print("="*70)
-    print("NYC TAXI RIDES DATA LOADER")
-    print("="*70)
+    except Exception as e:
+        logger.error(f"Data loading process failed: {str(e)}")
+        return None
+
+
+if __name__ == '__main__':
+    """
+    Example usage of the load_data module.
+    """
+    # Example 1: Load data with default configuration
+    logger.info("=== Running load_data.py as main module ===")
     
-    # Create Spark session
-    spark = create_spark_session()
+    # Example configuration
+    example_config = {
+        'data_path': 'data/raw/example.csv',
+        'validate': True
+    }
     
     # Load data
-    df = load_taxi_data(spark, data_path)
+    result = main(example_config)
     
-    # Display information
-    if df is not None:
-        display_data_info(df)
-        print("\n" + "="*70)
-        print("✓ Data loading and inspection completed successfully")
-        print("="*70)
+    if result is not None:
+        logger.info("✓ Data loaded successfully")
     else:
-        print("\n" + "="*70)
-        print("✗ Data loading failed. Please check the error messages above.")
-        print("="*70)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+        logger.warning("✗ Failed to load data")
