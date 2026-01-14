@@ -1,14 +1,16 @@
 """
-Data loading module for test_project1.
+Data loading module for pipeline processing.
 
-This module provides functionality to load and process data from various sources.
-It supports both local execution and Colab environments through relative path handling.
+This module provides functions to load and preprocess data from various sources.
+It can be used both as a library and as a command-line tool.
 """
 
 import logging
-import os
+import argparse
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Union
+import pandas as pd
+
 
 # Configure logging
 logging.basicConfig(
@@ -18,180 +20,332 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_project_root() -> Path:
+def setup_logger(log_level: str = 'INFO') -> None:
     """
-    Get the project root directory.
-    
-    Works correctly in both local and Colab environments by finding the
-    directory containing the src module.
-    
-    Returns:
-        Path: The absolute path to the project root directory.
-    """
-    # Get the directory containing this file
-    current_file = Path(__file__).resolve()
-    # Go up one level from src/ to get project root
-    project_root = current_file.parent.parent
-    logger.debug(f"Project root detected at: {project_root}")
-    return project_root
-
-
-def get_data_path(relative_path: str) -> Path:
-    """
-    Get the absolute path to a data file using relative path from project root.
+    Configure the logging level for the module.
     
     Args:
-        relative_path: Path relative to the project root (e.g., 'data/raw/file.csv')
-    
-    Returns:
-        Path: The absolute path to the data file.
+        log_level: Logging level as a string (DEBUG, INFO, WARNING, ERROR, CRITICAL)
     """
-    project_root = get_project_root()
-    full_path = project_root / relative_path
-    logger.debug(f"Data path resolved: {full_path}")
-    return full_path
+    logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
+    logger.info(f"Logging level set to {log_level}")
 
 
-def load_data(file_path: str) -> Optional[Any]:
+def validate_file_path(file_path: Union[str, Path]) -> Path:
     """
-    Load data from a file.
-    
-    Supports multiple file formats (CSV, JSON, etc.) and handles errors gracefully.
+    Validate that a file path exists and is readable.
     
     Args:
-        file_path: Path to the data file (can be relative or absolute).
-                  If relative, it's resolved from the project root.
-    
+        file_path: Path to the file to validate
+        
     Returns:
-        Optional[Any]: The loaded data, or None if loading failed.
-    
+        Path object if valid
+        
     Raises:
-        FileNotFoundError: If the specified file cannot be found.
+        FileNotFoundError: If file doesn't exist
+        IsADirectoryError: If path is a directory
+    """
+    path = Path(file_path)
+    
+    if not path.exists():
+        logger.error(f"File not found: {file_path}")
+        raise FileNotFoundError(f"File not found: {file_path}")
+    
+    if path.is_dir():
+        logger.error(f"Path is a directory, not a file: {file_path}")
+        raise IsADirectoryError(f"Path is a directory, not a file: {file_path}")
+    
+    logger.debug(f"File path validated: {file_path}")
+    return path
+
+
+def load_csv_data(
+    file_path: Union[str, Path],
+    delimiter: str = ',',
+    encoding: str = 'utf-8',
+    **kwargs
+) -> pd.DataFrame:
+    """
+    Load data from a CSV file.
+    
+    Args:
+        file_path: Path to the CSV file
+        delimiter: Delimiter used in the CSV file
+        encoding: File encoding
+        **kwargs: Additional arguments to pass to pd.read_csv()
+        
+    Returns:
+        DataFrame containing the loaded data
     """
     try:
-        # Handle relative paths from project root
-        if not os.path.isabs(file_path):
-            data_path = get_data_path(file_path)
-        else:
-            data_path = Path(file_path)
+        path = validate_file_path(file_path)
+        logger.info(f"Loading CSV data from: {path}")
         
-        if not data_path.exists():
-            logger.error(f"File not found: {data_path}")
-            raise FileNotFoundError(f"Data file not found at: {data_path}")
+        df = pd.read_csv(path, delimiter=delimiter, encoding=encoding, **kwargs)
+        logger.info(f"Successfully loaded data with shape: {df.shape}")
         
-        logger.info(f"Loading data from: {data_path}")
-        
-        # Determine file type and load accordingly
-        file_extension = data_path.suffix.lower()
-        
-        if file_extension == '.csv':
-            import pandas as pd
-            data = pd.read_csv(data_path)
-            logger.info(f"Successfully loaded CSV file with shape: {data.shape}")
-        elif file_extension == '.json':
-            import json
-            with open(data_path, 'r') as f:
-                data = json.load(f)
-            logger.info(f"Successfully loaded JSON file")
-        elif file_extension in ['.pkl', '.pickle']:
-            import pickle
-            with open(data_path, 'rb') as f:
-                data = pickle.load(f)
-            logger.info(f"Successfully loaded pickle file")
-        else:
-            logger.warning(f"Unsupported file format: {file_extension}")
-            data = None
-        
-        return data
-    
+        return df
     except Exception as e:
-        logger.error(f"Error loading data from {file_path}: {str(e)}")
+        logger.error(f"Failed to load CSV data from {file_path}: {str(e)}")
         raise
 
 
-def validate_data(data: Any) -> bool:
+def load_json_data(
+    file_path: Union[str, Path],
+    **kwargs
+) -> Union[dict, list, pd.DataFrame]:
     """
-    Validate loaded data.
-    
-    Performs basic validation checks on the loaded data.
+    Load data from a JSON file.
     
     Args:
-        data: The data to validate.
-    
-    Returns:
-        bool: True if data passes validation, False otherwise.
-    """
-    if data is None:
-        logger.warning("Data is None")
-        return False
-    
-    try:
-        import pandas as pd
-        if isinstance(data, pd.DataFrame):
-            if data.empty:
-                logger.warning("DataFrame is empty")
-                return False
-            logger.info(f"DataFrame validation passed. Shape: {data.shape}")
-            return True
-    except ImportError:
-        pass
-    
-    logger.info("Data validation passed")
-    return True
-
-
-def main(config: Optional[Dict[str, Any]] = None) -> Optional[Any]:
-    """
-    Main function to load and validate data.
-    
-    Args:
-        config: Optional configuration dictionary with keys:
-               - 'data_path': Path to the data file (relative to project root)
-               - 'validate': Whether to validate data (default: True)
-    
-    Returns:
-        Optional[Any]: The loaded and validated data, or None if loading failed.
-    """
-    config = config or {}
-    data_path = config.get('data_path', 'data/raw/data.csv')
-    should_validate = config.get('validate', True)
-    
-    logger.info(f"Starting data loading process with config: {config}")
-    
-    try:
-        # Load the data
-        data = load_data(data_path)
+        file_path: Path to the JSON file
+        **kwargs: Additional arguments to pass to pd.read_json() or json.load()
         
-        # Validate if requested
-        if should_validate and not validate_data(data):
-            logger.warning("Data validation failed")
-            return None
+    Returns:
+        Loaded JSON data (dict, list, or DataFrame depending on content)
+    """
+    try:
+        path = validate_file_path(file_path)
+        logger.info(f"Loading JSON data from: {path}")
         
-        logger.info("Data loading process completed successfully")
+        # Try loading as DataFrame first, fall back to json if it fails
+        try:
+            data = pd.read_json(path, **kwargs)
+            logger.info(f"Loaded JSON as DataFrame with shape: {data.shape}")
+        except Exception:
+            import json
+            with open(path, 'r') as f:
+                data = json.load(f)
+            logger.info(f"Loaded JSON data as native Python object")
+        
         return data
-    
     except Exception as e:
-        logger.error(f"Data loading process failed: {str(e)}")
-        return None
+        logger.error(f"Failed to load JSON data from {file_path}: {str(e)}")
+        raise
+
+
+def load_data(
+    file_path: Union[str, Path],
+    file_type: Optional[str] = None,
+    **kwargs
+) -> pd.DataFrame:
+    """
+    Load data from a file, automatically detecting type if not specified.
+    
+    Args:
+        file_path: Path to the data file
+        file_type: Type of file ('csv', 'json', etc.). Auto-detected if None
+        **kwargs: Additional arguments passed to the specific loader function
+        
+    Returns:
+        DataFrame containing the loaded data
+    """
+    path = Path(file_path)
+    
+    # Auto-detect file type if not specified
+    if file_type is None:
+        file_type = path.suffix.lstrip('.').lower()
+        logger.debug(f"Auto-detected file type: {file_type}")
+    
+    file_type = file_type.lower()
+    
+    if file_type == 'csv':
+        return load_csv_data(file_path, **kwargs)
+    elif file_type == 'json':
+        data = load_json_data(file_path, **kwargs)
+        if isinstance(data, pd.DataFrame):
+            return data
+        else:
+            logger.warning("JSON data is not a DataFrame, converting...")
+            return pd.DataFrame(data)
+    else:
+        logger.error(f"Unsupported file type: {file_type}")
+        raise ValueError(f"Unsupported file type: {file_type}")
+
+
+def preprocess_data(
+    df: pd.DataFrame,
+    remove_duplicates: bool = True,
+    drop_missing: bool = False,
+    missing_threshold: Optional[float] = None
+) -> pd.DataFrame:
+    """
+    Preprocess the loaded data.
+    
+    Args:
+        df: Input DataFrame
+        remove_duplicates: Whether to remove duplicate rows
+        drop_missing: Whether to drop rows with missing values
+        missing_threshold: Drop columns where missing percentage exceeds this threshold (0-1)
+        
+    Returns:
+        Preprocessed DataFrame
+    """
+    logger.info(f"Starting preprocessing on data with shape: {df.shape}")
+    
+    # Remove duplicates
+    if remove_duplicates:
+        initial_rows = len(df)
+        df = df.drop_duplicates()
+        removed = initial_rows - len(df)
+        if removed > 0:
+            logger.info(f"Removed {removed} duplicate rows")
+    
+    # Drop columns with too many missing values
+    if missing_threshold is not None:
+        initial_cols = len(df.columns)
+        missing_pct = df.isnull().sum() / len(df)
+        cols_to_drop = missing_pct[missing_pct > missing_threshold].index
+        df = df.drop(columns=cols_to_drop)
+        dropped = initial_cols - len(df.columns)
+        if dropped > 0:
+            logger.info(f"Dropped {dropped} columns with >{missing_threshold*100:.1f}% missing values")
+    
+    # Drop rows with missing values
+    if drop_missing:
+        initial_rows = len(df)
+        df = df.dropna()
+        removed = initial_rows - len(df)
+        if removed > 0:
+            logger.info(f"Removed {removed} rows with missing values")
+    
+    logger.info(f"Preprocessing complete. Final data shape: {df.shape}")
+    return df
+
+
+def save_data(
+    df: pd.DataFrame,
+    output_path: Union[str, Path],
+    file_type: Optional[str] = None,
+    **kwargs
+) -> None:
+    """
+    Save DataFrame to a file.
+    
+    Args:
+        df: DataFrame to save
+        output_path: Path where to save the file
+        file_type: Type of file ('csv', 'json', 'parquet'). Auto-detected if None
+        **kwargs: Additional arguments passed to the save function
+    """
+    output_path = Path(output_path)
+    
+    # Auto-detect file type if not specified
+    if file_type is None:
+        file_type = output_path.suffix.lstrip('.').lower()
+    
+    file_type = file_type.lower()
+    
+    try:
+        # Create parent directories if they don't exist
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f"Saving data to: {output_path}")
+        
+        if file_type == 'csv':
+            df.to_csv(output_path, index=False, **kwargs)
+        elif file_type == 'json':
+            df.to_json(output_path, **kwargs)
+        elif file_type == 'parquet':
+            df.to_parquet(output_path, **kwargs)
+        else:
+            logger.error(f"Unsupported output file type: {file_type}")
+            raise ValueError(f"Unsupported output file type: {file_type}")
+        
+        logger.info(f"Successfully saved data with shape {df.shape} to {output_path}")
+    except Exception as e:
+        logger.error(f"Failed to save data to {output_path}: {str(e)}")
+        raise
+
+
+def main(args: Optional[list] = None) -> None:
+    """
+    CLI entry point for the data loading module.
+    
+    Args:
+        args: Command-line arguments. If None, uses sys.argv
+    """
+    parser = argparse.ArgumentParser(
+        description='Load and preprocess data from various file formats'
+    )
+    parser.add_argument(
+        'input_file',
+        type=str,
+        help='Path to the input data file'
+    )
+    parser.add_argument(
+        '-o', '--output',
+        type=str,
+        help='Path to save the processed data (optional)'
+    )
+    parser.add_argument(
+        '-t', '--type',
+        type=str,
+        choices=['csv', 'json', 'parquet'],
+        help='File type (auto-detected if not specified)'
+    )
+    parser.add_argument(
+        '--remove-duplicates',
+        action='store_true',
+        default=True,
+        help='Remove duplicate rows (default: True)'
+    )
+    parser.add_argument(
+        '--no-remove-duplicates',
+        dest='remove_duplicates',
+        action='store_false',
+        help='Keep duplicate rows'
+    )
+    parser.add_argument(
+        '--drop-missing',
+        action='store_true',
+        help='Drop rows with missing values'
+    )
+    parser.add_argument(
+        '--missing-threshold',
+        type=float,
+        default=None,
+        help='Drop columns where missing percentage exceeds this threshold (0-1)'
+    )
+    parser.add_argument(
+        '-l', '--log-level',
+        type=str,
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        default='INFO',
+        help='Logging level (default: INFO)'
+    )
+    
+    parsed_args = parser.parse_args(args)
+    
+    # Setup logging
+    setup_logger(parsed_args.log_level)
+    
+    try:
+        # Load data
+        logger.info(f"Loading data from: {parsed_args.input_file}")
+        df = load_data(parsed_args.input_file, file_type=parsed_args.type)
+        
+        # Preprocess data
+        logger.info("Preprocessing data...")
+        df = preprocess_data(
+            df,
+            remove_duplicates=parsed_args.remove_duplicates,
+            drop_missing=parsed_args.drop_missing,
+            missing_threshold=parsed_args.missing_threshold
+        )
+        
+        # Save processed data if output path is specified
+        if parsed_args.output:
+            save_data(df, parsed_args.output, file_type=parsed_args.type)
+            logger.info(f"Data processing complete. Output saved to: {parsed_args.output}")
+        else:
+            logger.info(f"Data processing complete. Shape: {df.shape}")
+            logger.info("No output path specified. Data not saved.")
+        
+    except Exception as e:
+        logger.error(f"Error during data processing: {str(e)}")
+        raise
 
 
 if __name__ == '__main__':
-    """
-    Example usage of the load_data module.
-    """
-    # Example 1: Load data with default configuration
-    logger.info("=== Running load_data.py as main module ===")
-    
-    # Example configuration
-    example_config = {
-        'data_path': 'data/raw/example.csv',
-        'validate': True
-    }
-    
-    # Load data
-    result = main(example_config)
-    
-    if result is not None:
-        logger.info("✓ Data loaded successfully")
-    else:
-        logger.warning("✗ Failed to load data")
+    main()
