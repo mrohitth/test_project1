@@ -1,349 +1,463 @@
 """
-Database Loader Module
-Loads transformed Spark DataFrames into DuckDB or PostgreSQL with logging and verification.
-Author: mrohitth
-Date: 2026-01-13
+Database loader module for loading data to various database backends.
+
+This module provides a flexible, production-ready solution for loading data
+from various sources to databases using either Spark or Pandas DataFrames.
+Credentials are loaded from environment variables for security.
 """
 
+import argparse
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime
-import sys
+import os
+from typing import Optional, Union, Dict, Any
+from abc import ABC, abstractmethod
+from pathlib import Path
 
 try:
-    from pyspark.sql import DataFrame, SparkSession
+    import pyspark.sql as spark_sql
+    SPARK_AVAILABLE = True
 except ImportError:
-    print("Warning: PySpark not installed. Some features may not work.")
+    SPARK_AVAILABLE = False
 
 try:
-    import duckdb
+    import pandas as pd
+    PANDAS_AVAILABLE = True
 except ImportError:
-    duckdb = None
-
-try:
-    import psycopg2
-    from psycopg2.pool import SimpleConnectionPool
-except ImportError:
-    psycopg2 = None
+    PANDAS_AVAILABLE = False
 
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+def setup_logging(log_level: str = "INFO") -> logging.Logger:
+    """
+    Set up logging configuration.
+    
+    Args:
+        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        
+    Returns:
+        Configured logger instance
+    """
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('load_to_db.log')
+        ]
+    )
+    return logging.getLogger(__name__)
 
 
-class DatabaseLoader:
-    """
-    Handles loading Spark DataFrames into DuckDB or PostgreSQL databases.
-    Supports table creation, incremental loading, and verification.
-    """
+logger = setup_logging()
+
+
+class DatabaseLoader(ABC):
+    """Abstract base class for database loaders."""
     
-    def __init__(self, db_type: str, connection_params: Optional[Dict[str, Any]] = None):
-        """
-        Initialize the DatabaseLoader.
-        
-        Args:
-            db_type: Type of database ('duckdb' or 'postgresql')
-            connection_params: Dictionary with connection parameters
-                For DuckDB: {'database': 'path_to_db_file'}
-                For PostgreSQL: {'host': 'host', 'port': 'port', 'user': 'user', 
-                                'password': 'password', 'database': 'database'}
-        """
-        self.db_type = db_type.lower()
-        self.connection_params = connection_params or {}
-        self.connection = None
-        
-        if self.db_type not in ['duckdb', 'postgresql']:
-            raise ValueError(f"Unsupported database type: {db_type}")
-        
-        if self.db_type == 'duckdb' and duckdb is None:
-            raise ImportError("DuckDB is not installed. Install with: pip install duckdb")
-        
-        if self.db_type == 'postgresql' and psycopg2 is None:
-            raise ImportError("psycopg2 is not installed. Install with: pip install psycopg2-binary")
-        
-        self._initialize_connection()
+    @abstractmethod
+    def connect(self) -> None:
+        """Establish database connection."""
+        pass
     
-    def _initialize_connection(self):
-        """Initialize database connection based on db_type."""
-        try:
-            if self.db_type == 'duckdb':
-                db_file = self.connection_params.get('database', ':memory:')
-                self.connection = duckdb.connect(db_file)
-                logger.info(f"Connected to DuckDB: {db_file}")
-            
-            elif self.db_type == 'postgresql':
-                self.connection = psycopg2.connect(
-                    host=self.connection_params.get('host', 'localhost'),
-                    port=self.connection_params.get('port', 5432),
-                    user=self.connection_params.get('user', 'postgres'),
-                    password=self.connection_params.get('password', ''),
-                    database=self.connection_params.get('database', 'postgres')
-                )
-                logger.info(f"Connected to PostgreSQL: {self.connection_params.get('database')}")
-        
-        except Exception as e:
-            logger.error(f"Failed to initialize connection: {str(e)}")
-            raise
+    @abstractmethod
+    def load_data(self, data: Union['spark_sql.DataFrame', 'pd.DataFrame'], 
+                  table_name: str, **kwargs) -> None:
+        """Load data to database."""
+        pass
     
-    def load_dataframe(
-        self,
-        df: 'DataFrame',
-        table_name: str,
-        mode: str = 'overwrite',
-        verify: bool = True
-    ) -> Dict[str, Any]:
-        """
-        Load a Spark DataFrame into the database.
-        
-        Args:
-            df: Spark DataFrame to load
-            table_name: Name of the target table
-            mode: 'overwrite' to replace table, 'append' for incremental load
-            verify: Whether to verify the load by querying back
-        
-        Returns:
-            Dictionary with load statistics
-        """
-        load_stats = {
-            'timestamp': datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'),
-            'table_name': table_name,
-            'mode': mode,
-            'status': 'FAILED',
-            'input_row_count': 0,
-            'output_row_count': 0,
-            'schema': None,
-            'message': ''
-        }
-        
-        try:
-            # Get input row count
-            load_stats['input_row_count'] = df.count()
-            logger.info(f"Input DataFrame has {load_stats['input_row_count']} rows")
-            
-            # Get schema information
-            load_stats['schema'] = {col.name: str(col.dataType) for col in df.schema}
-            logger.info(f"Schema: {load_stats['schema']}")
-            
-            if self.db_type == 'duckdb':
-                self._load_to_duckdb(df, table_name, mode, load_stats)
-            elif self.db_type == 'postgresql':
-                self._load_to_postgresql(df, table_name, mode, load_stats)
-            
-            # Verify the load
-            if verify:
-                self._verify_load(table_name, load_stats)
-            
-            load_stats['status'] = 'SUCCESS'
-            logger.info(f"Successfully loaded {load_stats['output_row_count']} rows to {table_name}")
-        
-        except Exception as e:
-            load_stats['message'] = f"Load failed: {str(e)}"
-            logger.error(load_stats['message'])
-        
-        return load_stats
-    
-    def _load_to_duckdb(self, df: 'DataFrame', table_name: str, mode: str, stats: Dict):
-        """Load DataFrame to DuckDB."""
-        try:
-            # Convert Spark DataFrame to Arrow and then to DuckDB
-            temp_table = f"temp_{table_name}_{datetime.utcnow().strftime('%s')}"
-            
-            # Register as temporary view in Spark (if available)
-            df.createOrReplaceTempView(temp_table)
-            
-            # For DuckDB, we'll use direct insertion
-            if mode == 'overwrite':
-                self.connection.execute(f"DROP TABLE IF EXISTS {table_name}")
-                logger.info(f"Dropped existing table {table_name}")
-            
-            # Create table from Arrow batches
-            arrow_batches = df.collect()
-            
-            if mode == 'overwrite':
-                self.connection.execute(f"""
-                    CREATE TABLE {table_name} AS
-                    SELECT * FROM (SELECT 1 WHERE FALSE)
-                """)
-            
-            # Insert data
-            row_count = 0
-            for batch in arrow_batches:
-                row_count += 1
-            
-            # Simplified approach: use from_df
-            df_pd = df.toPandas()
-            
-            if mode == 'overwrite':
-                self.connection.register(table_name, df_pd)
-                self.connection.execute(f"CREATE TABLE {table_name} AS SELECT * FROM {table_name}")
-            elif mode == 'append':
-                temp_name = f"temp_{table_name}"
-                self.connection.register(temp_name, df_pd)
-                self.connection.execute(f"INSERT INTO {table_name} SELECT * FROM {temp_name}")
-                self.connection.execute(f"DROP TABLE {temp_name}")
-            
-            stats['output_row_count'] = len(df_pd)
-            logger.info(f"Successfully loaded {stats['output_row_count']} rows to DuckDB table {table_name}")
-        
-        except Exception as e:
-            logger.error(f"DuckDB load failed: {str(e)}")
-            raise
-    
-    def _load_to_postgresql(self, df: 'DataFrame', table_name: str, mode: str, stats: Dict):
-        """Load DataFrame to PostgreSQL."""
-        try:
-            # Convert to Pandas for easier handling
-            df_pd = df.toPandas()
-            
-            cursor = self.connection.cursor()
-            
-            # Create table if not exists
-            if mode == 'overwrite':
-                cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                self.connection.commit()
-                logger.info(f"Dropped existing table {table_name}")
-            
-            # Create table schema
-            columns_def = []
-            for col_name, col_type in stats['schema'].items():
-                pg_type = self._spark_type_to_postgres(col_type)
-                columns_def.append(f"{col_name} {pg_type}")
-            
-            create_table_sql = f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    {', '.join(columns_def)}
-                )
-            """
-            cursor.execute(create_table_sql)
-            self.connection.commit()
-            logger.info(f"Table {table_name} created or already exists")
-            
-            # Insert data
-            placeholders = ', '.join(['%s'] * len(df_pd.columns))
-            insert_sql = f"INSERT INTO {table_name} VALUES ({placeholders})"
-            
-            for _, row in df_pd.iterrows():
-                cursor.execute(insert_sql, tuple(row))
-            
-            self.connection.commit()
-            stats['output_row_count'] = len(df_pd)
-            logger.info(f"Successfully loaded {stats['output_row_count']} rows to PostgreSQL table {table_name}")
-            cursor.close()
-        
-        except Exception as e:
-            self.connection.rollback()
-            logger.error(f"PostgreSQL load failed: {str(e)}")
-            raise
-    
-    def _verify_load(self, table_name: str, stats: Dict):
-        """Verify the load by querying back the table."""
-        try:
-            if self.db_type == 'duckdb':
-                result = self.connection.execute(f"SELECT COUNT(*) as cnt FROM {table_name}").fetchall()
-                count = result[0][0] if result else 0
-                
-                schema_result = self.connection.execute(f"DESCRIBE {table_name}").fetchall()
-                logger.info(f"Verification - {table_name}: {count} rows")
-                logger.info(f"Columns: {[row[0] for row in schema_result]}")
-            
-            elif self.db_type == 'postgresql':
-                cursor = self.connection.cursor()
-                cursor.execute(f"SELECT COUNT(*) as cnt FROM {table_name}")
-                count = cursor.fetchone()[0]
-                
-                cursor.execute(f"""
-                    SELECT column_name, data_type 
-                    FROM information_schema.columns 
-                    WHERE table_name = %s
-                """, (table_name,))
-                columns = cursor.fetchall()
-                
-                logger.info(f"Verification - {table_name}: {count} rows")
-                logger.info(f"Columns: {[col[0] for col in columns]}")
-                cursor.close()
-            
-            stats['verified_row_count'] = count
-        
-        except Exception as e:
-            logger.warning(f"Verification failed: {str(e)}")
-    
-    @staticmethod
-    def _spark_type_to_postgres(spark_type: str) -> str:
-        """Convert Spark data types to PostgreSQL types."""
-        type_mapping = {
-            'StringType': 'VARCHAR(255)',
-            'IntegerType': 'INTEGER',
-            'LongType': 'BIGINT',
-            'FloatType': 'FLOAT',
-            'DoubleType': 'DOUBLE PRECISION',
-            'BooleanType': 'BOOLEAN',
-            'TimestampType': 'TIMESTAMP',
-            'DateType': 'DATE',
-            'DecimalType': 'DECIMAL',
-            'ByteType': 'SMALLINT',
-            'ShortType': 'SMALLINT'
-        }
-        return type_mapping.get(spark_type, 'VARCHAR(255)')
-    
-    def close(self):
+    @abstractmethod
+    def disconnect(self) -> None:
         """Close database connection."""
-        if self.connection:
+        pass
+
+
+class PostgreSQLLoader(DatabaseLoader):
+    """PostgreSQL database loader."""
+    
+    def __init__(self, host: str, port: int, database: str, 
+                 user: str, password: str):
+        """
+        Initialize PostgreSQL loader with connection parameters.
+        
+        Args:
+            host: Database host
+            port: Database port
+            database: Database name
+            user: Database user
+            password: Database password
+        """
+        self.host = host
+        self.port = port
+        self.database = database
+        self.user = user
+        self.password = password
+        self.connection = None
+        logger.info(f"Initialized PostgreSQL loader for {host}:{port}/{database}")
+    
+    def connect(self) -> None:
+        """Establish connection to PostgreSQL."""
+        try:
+            import psycopg2
+            self.connection = psycopg2.connect(
+                host=self.host,
+                port=self.port,
+                database=self.database,
+                user=self.user,
+                password=self.password
+            )
+            logger.info("Successfully connected to PostgreSQL")
+        except ImportError:
+            logger.error("psycopg2 not installed. Install with: pip install psycopg2-binary")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to connect to PostgreSQL: {str(e)}")
+            raise
+    
+    def load_data(self, data: Union['spark_sql.DataFrame', 'pd.DataFrame'], 
+                  table_name: str, mode: str = "replace", **kwargs) -> None:
+        """
+        Load data to PostgreSQL table.
+        
+        Args:
+            data: Spark or Pandas DataFrame
+            table_name: Target table name
+            mode: Load mode (replace, append)
+            **kwargs: Additional parameters for sqlalchemy
+        """
+        try:
+            if not self.connection:
+                self.connect()
+            
+            # Convert Spark DataFrame to Pandas if necessary
+            if SPARK_AVAILABLE and isinstance(data, spark_sql.DataFrame):
+                logger.info(f"Converting Spark DataFrame to Pandas for loading to {table_name}")
+                data = data.toPandas()
+            
+            if not PANDAS_AVAILABLE:
+                raise ImportError("pandas not installed. Install with: pip install pandas")
+            
+            # Use sqlalchemy for loading
             try:
-                if self.db_type == 'duckdb':
-                    self.connection.close()
-                elif self.db_type == 'postgresql':
-                    self.connection.close()
-                logger.info("Database connection closed")
-            except Exception as e:
-                logger.error(f"Error closing connection: {str(e)}")
+                from sqlalchemy import create_engine
+                connection_string = (
+                    f"postgresql://{self.user}:{self.password}@"
+                    f"{self.host}:{self.port}/{self.database}"
+                )
+                engine = create_engine(connection_string)
+                
+                logger.info(f"Loading {len(data)} rows to table '{table_name}'")
+                data.to_sql(table_name, engine, if_exists=mode, index=False)
+                logger.info(f"Successfully loaded data to {table_name}")
+            except ImportError:
+                logger.error("sqlalchemy not installed. Install with: pip install sqlalchemy")
+                raise
+        except Exception as e:
+            logger.error(f"Failed to load data to PostgreSQL: {str(e)}")
+            raise
+    
+    def disconnect(self) -> None:
+        """Close PostgreSQL connection."""
+        if self.connection:
+            self.connection.close()
+            logger.info("PostgreSQL connection closed")
+
+
+class MySQLLoader(DatabaseLoader):
+    """MySQL database loader."""
+    
+    def __init__(self, host: str, port: int, database: str, 
+                 user: str, password: str):
+        """
+        Initialize MySQL loader with connection parameters.
+        
+        Args:
+            host: Database host
+            port: Database port
+            database: Database name
+            user: Database user
+            password: Database password
+        """
+        self.host = host
+        self.port = port
+        self.database = database
+        self.user = user
+        self.password = password
+        self.connection = None
+        logger.info(f"Initialized MySQL loader for {host}:{port}/{database}")
+    
+    def connect(self) -> None:
+        """Establish connection to MySQL."""
+        try:
+            import mysql.connector
+            self.connection = mysql.connector.connect(
+                host=self.host,
+                port=self.port,
+                database=self.database,
+                user=self.user,
+                password=self.password
+            )
+            logger.info("Successfully connected to MySQL")
+        except ImportError:
+            logger.error("mysql-connector-python not installed. Install with: pip install mysql-connector-python")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to connect to MySQL: {str(e)}")
+            raise
+    
+    def load_data(self, data: Union['spark_sql.DataFrame', 'pd.DataFrame'], 
+                  table_name: str, mode: str = "replace", **kwargs) -> None:
+        """
+        Load data to MySQL table.
+        
+        Args:
+            data: Spark or Pandas DataFrame
+            table_name: Target table name
+            mode: Load mode (replace, append)
+            **kwargs: Additional parameters
+        """
+        try:
+            if not self.connection:
+                self.connect()
+            
+            # Convert Spark DataFrame to Pandas if necessary
+            if SPARK_AVAILABLE and isinstance(data, spark_sql.DataFrame):
+                logger.info(f"Converting Spark DataFrame to Pandas for loading to {table_name}")
+                data = data.toPandas()
+            
+            if not PANDAS_AVAILABLE:
+                raise ImportError("pandas not installed. Install with: pip install pandas")
+            
+            # Use sqlalchemy for loading
+            try:
+                from sqlalchemy import create_engine
+                connection_string = (
+                    f"mysql+mysqlconnector://{self.user}:{self.password}@"
+                    f"{self.host}:{self.port}/{self.database}"
+                )
+                engine = create_engine(connection_string)
+                
+                logger.info(f"Loading {len(data)} rows to table '{table_name}'")
+                data.to_sql(table_name, engine, if_exists=mode, index=False)
+                logger.info(f"Successfully loaded data to {table_name}")
+            except ImportError:
+                logger.error("sqlalchemy not installed. Install with: pip install sqlalchemy")
+                raise
+        except Exception as e:
+            logger.error(f"Failed to load data to MySQL: {str(e)}")
+            raise
+    
+    def disconnect(self) -> None:
+        """Close MySQL connection."""
+        if self.connection:
+            self.connection.close()
+            logger.info("MySQL connection closed")
+
+
+class DatabaseLoaderFactory:
+    """Factory for creating database loader instances."""
+    
+    _loaders: Dict[str, type] = {
+        'postgresql': PostgreSQLLoader,
+        'postgres': PostgreSQLLoader,
+        'mysql': MySQLLoader,
+    }
+    
+    @classmethod
+    def create_loader(cls, db_type: str, **config) -> DatabaseLoader:
+        """
+        Create a database loader instance.
+        
+        Args:
+            db_type: Type of database (postgresql, mysql, etc.)
+            **config: Database configuration parameters
+            
+        Returns:
+            DatabaseLoader instance
+            
+        Raises:
+            ValueError: If database type is not supported
+        """
+        db_type_lower = db_type.lower()
+        if db_type_lower not in cls._loaders:
+            raise ValueError(
+                f"Unsupported database type: {db_type}. "
+                f"Supported types: {', '.join(cls._loaders.keys())}"
+            )
+        
+        logger.info(f"Creating {db_type} database loader")
+        return cls._loaders[db_type_lower](**config)
+
+
+def load_credentials_from_env(db_type: str) -> Dict[str, str]:
+    """
+    Load database credentials from environment variables.
+    
+    Args:
+        db_type: Type of database (postgresql, mysql, etc.)
+        
+    Returns:
+        Dictionary with database credentials
+        
+    Raises:
+        ValueError: If required environment variables are missing
+    """
+    required_vars = ['HOST', 'PORT', 'DATABASE', 'USER', 'PASSWORD']
+    prefix = f"DB_{db_type.upper()}_"
+    
+    credentials = {}
+    missing_vars = []
+    
+    for var in required_vars:
+        env_var = f"{prefix}{var}"
+        value = os.getenv(env_var)
+        if not value:
+            missing_vars.append(env_var)
+        else:
+            credentials[var.lower()] = value
+    
+    if missing_vars:
+        raise ValueError(
+            f"Missing required environment variables: {', '.join(missing_vars)}\n"
+            f"Expected format: {prefix}HOST, {prefix}PORT, {prefix}DATABASE, etc."
+        )
+    
+    # Convert port to integer
+    try:
+        credentials['port'] = int(credentials['port'])
+    except ValueError:
+        raise ValueError(f"PORT must be an integer, got: {credentials['port']}")
+    
+    logger.info(f"Loaded credentials for {db_type} database from environment")
+    return credentials
 
 
 def main():
-    """
-    Example usage of the DatabaseLoader class.
-    """
-    logger.info("=" * 80)
-    logger.info("Database Loader Script")
-    logger.info(f"Current Time (UTC): 2026-01-13 19:00:22")
-    logger.info(f"User: mrohitth")
-    logger.info("=" * 80)
+    """Main entry point for CLI."""
+    parser = argparse.ArgumentParser(
+        description="Load data to various databases using Spark or Pandas DataFrames",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Load from Parquet file to PostgreSQL
+  python load_to_db.py --db-type postgresql --source data.parquet --table my_table
+  
+  # Load from CSV file to MySQL
+  python load_to_db.py --db-type mysql --source data.csv --table my_table --format csv
+  
+Environment variables required (DB_<TYPE>_<PARAM>):
+  - DB_POSTGRESQL_HOST
+  - DB_POSTGRESQL_PORT
+  - DB_POSTGRESQL_DATABASE
+  - DB_POSTGRESQL_USER
+  - DB_POSTGRESQL_PASSWORD
+        """
+    )
     
-    # Example: Loading to DuckDB
+    parser.add_argument(
+        '--db-type',
+        required=True,
+        choices=['postgresql', 'mysql'],
+        help='Type of database to load to'
+    )
+    parser.add_argument(
+        '--source',
+        required=True,
+        type=str,
+        help='Path to source data file (parquet, csv, etc.)'
+    )
+    parser.add_argument(
+        '--table',
+        required=True,
+        type=str,
+        help='Target table name'
+    )
+    parser.add_argument(
+        '--format',
+        default='parquet',
+        choices=['parquet', 'csv', 'json'],
+        help='Source data format (default: parquet)'
+    )
+    parser.add_argument(
+        '--mode',
+        default='replace',
+        choices=['replace', 'append'],
+        help='Load mode (default: replace)'
+    )
+    parser.add_argument(
+        '--use-spark',
+        action='store_true',
+        help='Use Spark DataFrame instead of Pandas'
+    )
+    parser.add_argument(
+        '--log-level',
+        default='INFO',
+        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+        help='Logging level (default: INFO)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Update logging level if specified
+    if args.log_level != 'INFO':
+        for handler in logger.handlers:
+            handler.setLevel(getattr(logging, args.log_level))
+        logger.setLevel(getattr(logging, args.log_level))
+    
     try:
-        duckdb_loader = DatabaseLoader(
-            'duckdb',
-            {'database': 'test_database.db'}
-        )
-        logger.info("DuckDB loader initialized successfully")
-        duckdb_loader.close()
+        logger.info(f"Starting data load: {args.source} -> {args.table}")
+        
+        # Validate source file exists
+        source_path = Path(args.source)
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source file not found: {args.source}")
+        
+        logger.info(f"Reading {args.format} file: {args.source}")
+        
+        # Load data using specified engine
+        if args.use_spark and SPARK_AVAILABLE:
+            from pyspark.sql import SparkSession
+            spark = SparkSession.builder.appName("DataLoader").getOrCreate()
+            
+            if args.format == 'parquet':
+                data = spark.read.parquet(args.source)
+            elif args.format == 'csv':
+                data = spark.read.csv(args.source, header=True, inferSchema=True)
+            elif args.format == 'json':
+                data = spark.read.json(args.source)
+            else:
+                raise ValueError(f"Unsupported format: {args.format}")
+        else:
+            if args.use_spark and not SPARK_AVAILABLE:
+                logger.warning("Spark not available, falling back to Pandas")
+            
+            if not PANDAS_AVAILABLE:
+                raise ImportError("pandas not installed. Install with: pip install pandas")
+            
+            if args.format == 'parquet':
+                data = pd.read_parquet(args.source)
+            elif args.format == 'csv':
+                data = pd.read_csv(args.source)
+            elif args.format == 'json':
+                data = pd.read_json(args.source)
+            else:
+                raise ValueError(f"Unsupported format: {args.format}")
+        
+        logger.info(f"Loaded data with {len(data)} rows")
+        
+        # Load credentials and create loader
+        credentials = load_credentials_from_env(args.db_type)
+        loader = DatabaseLoaderFactory.create_loader(args.db_type, **credentials)
+        
+        # Load data to database
+        loader.load_data(data, args.table, mode=args.mode)
+        loader.disconnect()
+        
+        logger.info("Data load completed successfully")
+        
     except Exception as e:
-        logger.error(f"DuckDB initialization failed: {str(e)}")
-    
-    # Example: Loading to PostgreSQL
-    try:
-        postgres_loader = DatabaseLoader(
-            'postgresql',
-            {
-                'host': 'localhost',
-                'port': 5432,
-                'user': 'postgres',
-                'password': 'password',
-                'database': 'testdb'
-            }
-        )
-        logger.info("PostgreSQL loader initialized successfully")
-        postgres_loader.close()
-    except Exception as e:
-        logger.error(f"PostgreSQL initialization failed: {str(e)}")
-    
-    logger.info("=" * 80)
-    logger.info("Script execution completed")
-    logger.info("=" * 80)
+        logger.error(f"Data load failed: {str(e)}", exc_info=True)
+        raise
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
