@@ -1,109 +1,108 @@
+"""
+Simplified Dashboard Application
+Loads data once and displays simple metrics without complex visualizations.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
-# Set page configuration FIRST
+
+# Configuration
 st.set_page_config(
-    page_title="Data Dashboard",
+    page_title="Simplified Dashboard",
     page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed"
+    layout="wide"
 )
 
-# Title
-st.title("📊 Data Analysis Dashboard")
+# Load data once at startup using Streamlit's caching
+@st.cache_data
+def load_data():
+    """Load data from CSV file."""
+    data_path = Path(__file__).parent.parent / "data" / "data.csv"
+    
+    if not data_path.exists():
+        st.warning(f"Data file not found at {data_path}")
+        return None
+    
+    try:
+        df = pd.read_csv(data_path)
+        return df
+    except Exception as e:
+        st.error(f"Error loading data: {str(e)}")
+        return None
 
-# Show loading message while data loads
-with st.spinner("Loading data..."):
-    @st.cache_data(ttl=3600)
-    def load_data():
-        """Load sample data for dashboard - cached for 1 hour"""
-        try:
-            data = {
-                'date': pd.date_range('2025-01-01', periods=30, freq='D'),
-                'sales': [100 + i*5 for i in range(30)],
-                'customers': [20 + i*2 for i in range(30)],
-                'revenue': [1000 + i*50 for i in range(30)]
-            }
-            df = pd.DataFrame(data)
-            return df
-        except Exception as e:
-            st.error(f"Error loading data: {e}")
-            return None
+
+def main():
+    """Main application function."""
+    st.title("📊 Simplified Dashboard")
+    st.markdown("---")
     
     # Load data
     df = load_data()
-
-# Check if data loaded successfully
-if df is None:
-    st.error("Failed to load data. Please refresh the page.")
-    st.stop()
-
-# Success indicator
-st.success("✅ Data loaded successfully")
-
-# Create tabs for different views
-tab1, tab2, tab3 = st.tabs(["📊 Overview", "📈 Analysis", "📋 Data"])
-
-with tab1:
-    st.subheader("Key Metrics")
     
-    col1, col2, col3, col4 = st.columns(4)
+    if df is None or df.empty:
+        st.error("No data available to display.")
+        return
+    
+    # Display basic information
+    st.subheader("Data Overview")
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("Total Revenue", f"${df['revenue'].sum():,.0f}")
+        st.metric("Total Records", len(df))
     
     with col2:
-        st.metric("Avg Daily Revenue", f"${df['revenue'].mean():,.0f}")
+        st.metric("Total Columns", len(df.columns))
     
     with col3:
-        st.metric("Total Customers", df['customers'].sum())
-    
-    with col4:
-        st.metric("Avg Customers/Day", f"{df['customers'].mean():.0f}")
+        st.metric("Data Shape", f"{len(df)} × {len(df.columns)}")
     
     st.markdown("---")
     
-    # Simple line chart (native Streamlit - very fast)
-    st.subheader("Revenue Trend")
-    chart_data = df.set_index('date')[['revenue']].copy()
-    st.line_chart(chart_data, use_container_width=True)
-
-with tab2:
-    st.subheader("Sales Analysis")
+    # Display simple metrics
+    st.subheader("Simple Metrics")
     
-    # Simple bar chart
-    st.subheader("Sales & Customers by Day")
-    bar_data = df.set_index('date')[['sales', 'customers']].copy()
-    st.bar_chart(bar_data, use_container_width=True)
+    # Numeric columns analysis
+    numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+    
+    if numeric_cols:
+        metrics_data = {}
+        for col in numeric_cols:
+            metrics_data[col] = {
+                "Mean": f"{df[col].mean():.2f}",
+                "Min": f"{df[col].min():.2f}",
+                "Max": f"{df[col].max():.2f}",
+                "Count": f"{df[col].count()}"
+            }
+        
+        for col, metrics in metrics_data.items():
+            st.write(f"**{col}**")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Mean", metrics["Mean"])
+            with col2:
+                st.metric("Min", metrics["Min"])
+            with col3:
+                st.metric("Max", metrics["Max"])
+            with col4:
+                st.metric("Count", metrics["Count"])
     
     st.markdown("---")
     
-    st.subheader("Summary Statistics")
-    st.write(df[['sales', 'customers', 'revenue']].describe())
-
-with tab3:
+    # Display data table
     st.subheader("Data Table")
-    
-    # Format display
-    display_df = df.copy()
-    display_df['date'] = display_df['date'].dt.strftime('%Y-%m-%d')
-    
-    # Use st.dataframe without deprecated parameter
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(df, use_container_width=True)
     
     st.markdown("---")
-    
-    # Download button
-    csv = display_df.to_csv(index=False)
-    st.download_button(
-        label="📥 Download as CSV",
-        data=csv,
-        file_name="dashboard_data.csv",
-        mime="text/csv"
-    )
+    st.info("Dashboard loaded successfully. All data is cached for optimal performance.")
 
-# Footer
-st.markdown("---")
-st.markdown(f"*Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC*")
-st.markdown("*Data is cached for 1 hour. Refresh browser to clear cache.*")
+
+if __name__ == "__main__":
+    main()
