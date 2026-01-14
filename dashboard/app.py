@@ -1,72 +1,144 @@
-import streamlit as st
 import pandas as pd
-import os
-from pathlib import Path
+import streamlit as st
+import plotly.express as px
+from datetime import datetime
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # Set page configuration
-st.set_page_config(page_title="Data Dashboard", layout="wide")
+st.set_page_config(
+    page_title="Data Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Title and description
-st.title("📊 Data Dashboard")
-st.markdown("Display and analyze processed data")
+# Title
+st.title("📊 Data Analysis Dashboard")
 
-# Automatically load processed_data.parquet from the working directory
+# Sidebar configuration
+st.sidebar.header("Dashboard Controls")
+
+# Load and process data
 @st.cache_data
 def load_data():
-    """Load processed_data.parquet from the working directory."""
-    parquet_path = Path("processed_data.parquet")
+    """Load sample data for dashboard"""
+    data = {
+        'date': pd.date_range('2025-01-01', periods=30, freq='D'),
+        'sales': [100 + i*5 for i in range(30)],
+        'customers': [20 + i*2 for i in range(30)],
+        'revenue': [1000 + i*50 for i in range(30)]
+    }
+    df = pd.DataFrame(data)
     
-    if not parquet_path.exists():
-        st.error(f"Error: processed_data.parquet not found in {os.getcwd()}")
-        st.info("Please ensure processed_data.parquet is in the working directory.")
-        return None
+    # Fix PyArrow serialization: Convert datetime to string for Streamlit caching
+    df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
     
-    try:
-        df = pd.read_parquet(parquet_path)
-        return df
-    except Exception as e:
-        st.error(f"Error loading parquet file: {str(e)}")
-        return None
+    # Ensure numeric columns are proper types
+    df['sales'] = df['sales'].astype('int64')
+    df['customers'] = df['customers'].astype('int64')
+    df['revenue'] = df['revenue'].astype('int64')
+    
+    return df
 
-# Load the data
+# Load data
 df = load_data()
 
-if df is not None:
-    # Display data summary
-    st.subheader("📈 Data Summary")
-    col1, col2, col3 = st.columns(3)
+# Convert date back to datetime for plotting
+df['date'] = pd.to_datetime(df['date'])
+
+# Create tabs for different views
+tab1, tab2, tab3 = st.tabs(["Overview", "Detailed Analysis", "Data Table"])
+
+with tab1:
+    st.subheader("Key Metrics")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
     with col1:
-        st.metric("Total Rows", len(df))
+        st.metric("Total Sales", f"${df['revenue'].sum():,.0f}")
+    
     with col2:
-        st.metric("Total Columns", len(df.columns))
+        st.metric("Avg Daily Sales", f"${df['revenue'].mean():,.0f}")
+    
     with col3:
-        st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024**2:.2f} MB")
+        st.metric("Total Customers", df['customers'].sum())
     
-    # Display dataset info
-    st.subheader("📋 Dataset Information")
-    st.write(df.info())
+    with col4:
+        st.metric("Avg Customers/Day", f"{df['customers'].mean():.0f}")
     
-    # Display first rows
-    st.subheader("👀 Data Preview")
-    st.dataframe(df.head(10))
+    st.markdown("---")
     
-    # Display statistics
-    st.subheader("📊 Statistical Summary")
-    st.dataframe(df.describe())
+    # Line chart
+    st.subheader("Revenue Trend")
+    fig_line = px.line(
+        df,
+        x='date',
+        y='revenue',
+        title='Daily Revenue',
+        markers=True,
+        template='plotly_white'
+    )
+    fig_line.update_xaxes(title_text="Date")
+    fig_line.update_yaxes(title_text="Revenue ($)")
+    st.plotly_chart(fig_line, use_container_width=True)
+
+with tab2:
+    st.subheader("Sales vs Customers")
     
-    # Column information
-    st.subheader("🔍 Column Details")
-    selected_column = st.selectbox("Select a column to view details:", df.columns)
-    if selected_column:
-        st.write(f"**Column:** {selected_column}")
-        st.write(f"**Data Type:** {df[selected_column].dtype}")
-        st.write(f"**Non-null Count:** {df[selected_column].notna().sum()}")
-        st.write(f"**Null Count:** {df[selected_column].isna().sum()}")
-        
-        if df[selected_column].dtype in ['int64', 'float64']:
-            st.write(f"**Min:** {df[selected_column].min()}")
-            st.write(f"**Max:** {df[selected_column].max()}")
-            st.write(f"**Mean:** {df[selected_column].mean():.4f}")
-            st.write(f"**Std Dev:** {df[selected_column].std():.4f}")
-else:
-    st.warning("Could not load data. Please check that processed_data.parquet exists in the working directory.")
+    # Prepare data for scatter plot - ensure compatible types
+    plot_df = df.copy()
+    plot_df['sales'] = pd.to_numeric(plot_df['sales'], errors='coerce')
+    plot_df['customers'] = pd.to_numeric(plot_df['customers'], errors='coerce')
+    
+    fig_scatter = px.scatter(
+        plot_df,
+        x='customers',
+        y='sales',
+        color='revenue',
+        size='revenue',
+        hover_data=['date'],
+        title='Customer Count vs Sales',
+        template='plotly_white'
+    )
+    st.plotly_chart(fig_scatter, use_container_width=True)
+    
+    # Bar chart
+    st.subheader("Daily Breakdown")
+    fig_bar = px.bar(
+        df,
+        x='date',
+        y=['sales', 'customers'],
+        title='Sales and Customers by Day',
+        barmode='group',
+        template='plotly_white'
+    )
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+with tab3:
+    st.subheader("Data Table")
+    
+    # Prepare table data with compatible types
+    table_df = df.copy()
+    table_df['date'] = table_df['date'].dt.strftime('%Y-%m-%d')
+    
+    # Format columns for display
+    display_df = table_df.copy()
+    display_df['sales'] = display_df['sales'].astype('int64')
+    display_df['customers'] = display_df['customers'].astype('int64')
+    display_df['revenue'] = display_df['revenue'].astype('int64')
+    
+    st.dataframe(display_df, use_container_width=True)
+    
+    # Download button
+    csv = display_df.to_csv(index=False)
+    st.download_button(
+        label="Download as CSV",
+        data=csv,
+        file_name="dashboard_data.csv",
+        mime="text/csv"
+    )
+
+# Footer
+st.markdown("---")
+st.markdown(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
