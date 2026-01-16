@@ -10,13 +10,43 @@ This project provides a comprehensive data pipeline implementation with support 
 ## Table of Contents
 1. [Architecture Overview](#architecture-overview)
 2. [Dashboard](#dashboard)
-3. [Setup Instructions](#setup-instructions)
+3. [Quick Start](#quick-start)
+4. [Setup Instructions](#setup-instructions)
    - [Local Setup](#local-setup)
    - [Google Colab Setup](#google-colab-setup)
-4. [ETL Workflow](#etl-workflow)
-5. [Data Snapshots](#data-snapshots)
-6. [Project Structure](#project-structure)
-7. [Contributing](#contributing)
+5. [ETL Workflow](#etl-workflow)
+6. [Data Snapshots](#data-snapshots)
+7. [Project Structure](#project-structure)
+8. [Additional Documentation](#additional-documentation)
+9. [Contributing](#contributing)
+
+---
+
+## Quick Start
+
+### 🚀 Fastest Way to Get Started
+
+**Option 1: Google Colab (Recommended for quick demo)**
+1. Open [Pipeline_Validation_Colab.ipynb](https://colab.research.google.com/github/mrohitth/test_project1/blob/copilot/fix-pipeline-refactor-errors/Pipeline_Validation_Colab.ipynb)
+2. Click `Runtime` → `Run all`
+3. Follow the prompts for data source configuration
+4. View metrics and visualizations instantly!
+
+**Option 2: Local Quick Start**
+```bash
+# Clone and setup
+git clone https://github.com/mrohitth/test_project1.git
+cd test_project1
+pip install -r requirements.txt
+
+# Run the pipeline
+python src/run_pipeline_simple.py
+
+# Launch the dashboard
+streamlit run dashboard/app.py
+```
+
+**That's it!** The pipeline will process sample data and generate reports.
 
 ---
 
@@ -600,6 +630,43 @@ test_project1/
 - Data validation at each stage
 - Integrity constraints
 - Comprehensive logging
+
+---
+
+## Additional Documentation
+
+📚 **Comprehensive Guides Available:**
+
+- **[USAGE_GUIDE.md](USAGE_GUIDE.md)** - Complete guide for all pipeline components
+  - Detailed usage instructions for each module
+  - Configuration options
+  - Code examples
+  - Troubleshooting tips
+  - Best practices
+
+- **[COLAB_README.md](COLAB_README.md)** - Google Colab notebook guide
+  - Step-by-step Colab instructions
+  - AWS S3 integration guide
+  - Data source configuration
+  - Expected outputs
+  - Performance tips
+
+- **[Pipeline_Validation_Colab.ipynb](Pipeline_Validation_Colab.ipynb)** - Interactive notebook
+  - Complete validation workflow
+  - AWS S3 data loading
+  - Interactive visualizations
+  - Metrics dashboard
+  - Export functionality
+
+### Module Documentation
+
+Each module includes detailed inline documentation:
+- `src/load_data.py` - Data loading from local and S3 sources
+- `src/s3_loader.py` - AWS S3 integration
+- `src/transform_data_pandas.py` - Data transformation pipeline
+- `src/load_to_db_simple.py` - Database loading (DuckDB/PostgreSQL)
+- `src/run_pipeline_simple.py` - Pipeline orchestrator
+- `dashboard/app.py` - Interactive Streamlit dashboard
 
 ---
 

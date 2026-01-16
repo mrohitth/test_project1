@@ -52,15 +52,20 @@ def get_data_path(relative_path: str) -> Path:
     return full_path
 
 
-def load_data(file_path: str) -> Optional[Any]:
+def load_data(file_path: str, source_type: str = 'local', **kwargs) -> Optional[Any]:
     """
-    Load data from a file.
+    Load data from a file (local or S3).
     
     Supports multiple file formats (CSV, JSON, etc.) and handles errors gracefully.
     
     Args:
         file_path: Path to the data file (can be relative or absolute).
-                  If relative, it's resolved from the project root.
+                  For S3: 's3://bucket/key' or provide bucket and key separately
+                  For local: relative or absolute path
+        source_type: 'local' or 's3'
+        **kwargs: Additional arguments:
+            - For S3: bucket, key, aws_access_key_id, aws_secret_access_key, region_name
+            - For CSV: Any pd.read_csv arguments
     
     Returns:
         Optional[Any]: The loaded data, or None if loading failed.
@@ -69,7 +74,53 @@ def load_data(file_path: str) -> Optional[Any]:
         FileNotFoundError: If the specified file cannot be found.
     """
     try:
-        # Handle relative paths from project root
+        # Handle S3 paths
+        if source_type == 's3' or file_path.startswith('s3://'):
+            from s3_loader import S3DataLoader
+            
+            # Parse S3 path
+            if file_path.startswith('s3://'):
+                # Extract bucket and key from s3:// URL
+                s3_parts = file_path.replace('s3://', '').split('/', 1)
+                bucket = s3_parts[0]
+                key = s3_parts[1] if len(s3_parts) > 1 else ''
+            else:
+                bucket = kwargs.get('bucket')
+                key = kwargs.get('key', file_path)
+            
+            if not bucket or not key:
+                raise ValueError("For S3 sources, provide either 's3://bucket/key' or bucket and key parameters")
+            
+            logger.info(f"Loading data from S3: s3://{bucket}/{key}")
+            
+            # Initialize S3 loader
+            s3_loader = S3DataLoader(
+                aws_access_key_id=kwargs.get('aws_access_key_id'),
+                aws_secret_access_key=kwargs.get('aws_secret_access_key'),
+                region_name=kwargs.get('region_name', 'us-east-1')
+            )
+            
+            # Determine file type from key
+            file_extension = Path(key).suffix.lower()
+            
+            if file_extension == '.csv':
+                data = s3_loader.load_csv_from_s3(bucket, key)
+                logger.info(f"Successfully loaded CSV from S3 with shape: {data.shape}")
+            elif file_extension == '.json':
+                data = s3_loader.load_json_from_s3(bucket, key)
+                logger.info(f"Successfully loaded JSON from S3")
+            else:
+                # Download file and load locally
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp:
+                    tmp_path = tmp.name
+                s3_loader.download_file(bucket, key, tmp_path)
+                data = load_data(tmp_path, source_type='local')
+                os.remove(tmp_path)
+            
+            return data
+        
+        # Handle local paths
         if not os.path.isabs(file_path):
             data_path = get_data_path(file_path)
         else:
