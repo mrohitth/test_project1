@@ -1,19 +1,12 @@
 """
-test_project1 ETL Pipeline Package
-==================================
+ETL Pipeline Source Package
+===========================
 
-This package provides a comprehensive ETL pipeline with:
-- Data loading from various sources (CSV, JSON, S3)
-- PySpark-based data transformations
-- Database loading (DuckDB, PostgreSQL)
-- Pipeline orchestration and monitoring
-
-Modules:
-- load_data: Data extraction utilities
-- transform_data: PySpark transformation pipeline
-- load_to_db: Database loading utilities
+This package contains the core ETL pipeline modules:
+- load_data: Data extraction from various sources including AWS S3
+- transform_data: PySpark-based data transformations
+- load_to_db: Database loading (DuckDB, PostgreSQL)
 - run_pipeline: Pipeline orchestration
-- pipeline: Core pipeline class
 """
 
 from .load_data import load_data, validate_data, get_project_root, get_data_path
