@@ -5,7 +5,7 @@ This module provides comprehensive data transformation utilities using pandas
 for environments where PySpark is not available (like Google Colab).
 
 Author: mrohitth
-Date: 2026-01-16
+Date: 2026-01-13
 """
 
 import logging
@@ -103,11 +103,11 @@ class PandasDataTransformer:
             elif strategy == "median":
                 numeric_cols = result.select_dtypes(include=[np.number]).columns
                 for col in numeric_cols:
-                    result[col].fillna(result[col].median(), inplace=True)
+                    result.loc[:, col] = result[col].fillna(result[col].median())
             elif strategy == "mean":
                 numeric_cols = result.select_dtypes(include=[np.number]).columns
                 for col in numeric_cols:
-                    result[col].fillna(result[col].mean(), inplace=True)
+                    result.loc[:, col] = result[col].fillna(result[col].mean())
             else:
                 self.logger.warning(f"Unknown strategy: {strategy}, returning original DataFrame")
 

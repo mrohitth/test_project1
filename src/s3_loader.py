@@ -108,8 +108,10 @@ class S3DataLoader:
         try:
             logger.info(f"Downloading s3://{bucket}/{key} to {local_path}")
             
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            # Create directory if it doesn't exist and path has a directory component
+            dir_path = os.path.dirname(local_path)
+            if dir_path:
+                os.makedirs(dir_path, exist_ok=True)
             
             self.s3_client.download_file(bucket, key, local_path)
             logger.info(f"File downloaded successfully to {local_path}")

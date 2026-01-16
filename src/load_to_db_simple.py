@@ -2,7 +2,7 @@
 Simple Database Loader Module (Non-Spark Version)
 Loads pandas DataFrames into DuckDB or PostgreSQL with logging and verification.
 Author: mrohitth
-Date: 2026-01-16
+Date: 2026-01-13
 """
 
 import logging
@@ -153,9 +153,9 @@ class SimpleDatabaseLoader:
                 logger.info(f"Dropped existing table {table_name}")
                 self.connection.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df")
             elif mode == 'append':
-                # Check if table exists
+                # Check if table exists using DuckDB's information_schema
                 result = self.connection.execute(
-                    f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+                    f"SELECT table_name FROM information_schema.tables WHERE table_name='{table_name}'"
                 ).fetchall()
                 
                 if not result:
